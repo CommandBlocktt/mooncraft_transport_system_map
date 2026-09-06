@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>地铁线网图 - 黑边白底换乘站版</title>
+    <style>
+        * { box-sizing: border-box; margin: 0; padding: 0; -webkit-tap-highlight-color: transparent; }
+        body { font-family: 'Segoe UI', 'PingFang SC', Roboto, sans-serif; background: #f0f2f5; display: flex; flex-direction: column; height: 100vh; overflow: hidden; user-select: none; touch-action: none; }
+        
+        #header { width: 100%; background: #1a2332; color: #fff; padding: 12px 24px; display: flex; justify-content: space-between; align-items: center; flex-shrink: 0; z-index: 10; }
+        #header h1 { font-size: 20px; font-weight: 600; }
+        #header h1 span { color: #8ab4f8; }
+        
+        #toolbar { width: 100%; background: #fff; padding: 8px 24px; display: flex; align-items: center; gap: 16px; flex-shrink: 0; border-bottom: 1px solid #e0e0e0; z-index: 9; }
+        #toolbar .status { font-size: 14px; color: #333; display: flex; align-items: center; gap: 8px; }
+        #toolbar .btn { background: #1a2332; color: #fff; border: none; padding: 6px 18px; border-radius: 20px; font-size: 13px; cursor: pointer; transition: background 0.2s; }
+        #toolbar .btn:hover { background: #2c3a50; }
+        #toolbar .btn.reset { background: #757575; }
+        
+        #canvas-wrap { flex: 1; width: 100%; position: relative; overflow: hidden; background: #f8f9fc; }
+        #canvas-wrap canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+        #canvas-wrap canvas:active { cursor: grabbing; }
+
+        /* 左侧缩放控制 */
+        #zoom-controls {
+            position: absolute; left: 20px; top: 50%; transform: translateY(-50%);
+            display: flex; flex-direction: column; gap: 10px;
+            background: rgba(255, 255, 255, 0.95); border-radius: 10px; padding: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15); z-index: 30;
+        }
+        #zoom-controls button {
+            width: 40px; height: 40px; border: none; border-radius: 6px;
+            background: #f0f2f5; font-size: 20px; font-weight: bold; color: #333; cursor: pointer;
+        }
+        #zoom-controls button:hover { background: #e0e4eb; }
+        #zoom-controls button.reset-view { font-size: 14px; }
+
+        /* 底部横向浮窗 - 仅允许横向滚动 */
+        #info-panel {
+            position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+            width: 90%; max-width: 1100px;
+            height: auto;
+            max-height: 45vh; /* 控制整体高度，防止遮挡地图 */
+            background: rgba(255, 255, 255, 0.98); border-radius: 12px; padding: 16px 20px;
+            box-shadow: 0 8px 24px rgba(0, 0, 0, 0.15); border: 1px solid rgba(255, 255, 255, 0.3);
+            font-size: 14px; color: #1a2332;
+            display: none; pointer-events: none; z-index: 20;
+            flex-direction: column;
+            overflow: hidden; /* 严禁整个面板出现滚动条 */
+        }
+        #info-panel.show {
+            display: flex;
+            pointer-events: auto;
+        }
+        
+        /* 核心：横向排列，强制只能左右滑动 */
+        .route-flow {
+            display: flex;
+            align-items: center; /* 换乘标签与线段保持在同一水平线 */
+            flex-wrap: nowrap;
+            flex: 1;
+            min-width: 0;
+            overflow-x: auto;  /* 只允许横向滚动 */
+            overflow-y: hidden; /* 严禁纵向滚动，防止切掉底部 */
+            padding-bottom: 5px;
+        }
+        
+        .segment-wrap { 
+            position: relative; 
+            display: flex; 
+            flex-direction: column; 
+            align-items: flex-start; 
+            flex-shrink: 0;
+            padding: 0 20px; 
+        }
+        .segment-header-h { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 14px; font-weight: 600; white-space: nowrap; }
+        .route-badge-h { display: inline-block; padding: 3px 10px; border-radius: 6px; color: #fff; font-weight: bold; font-size: 14px; line-height: 1.2; }
+        .direction-h { font-size: 14px; font-weight: 600; color: #333; }
+        
+        .stations-h { display: flex; align-items: flex-start; position: relative; padding: 15px 20px 0; }
+        .station-h { width: 50px; position: relative; display: flex; flex-direction: column; align-items: center; }
+        
+        .station-h::before {
+            content: ''; position: absolute; top: 5px; height: 5px; background: var(--line-color, #999); z-index: 0;
+        }
+        .station-h:not(:first-child):not(:last-child)::before { left: -25px; right: -25px; }
+        .station-h:first-child:not(:last-child)::before { left: 50%; right: -25px; }
+        .station-h:last-child:not(:first-child)::before { left: -25px; right: 50%; }
+        .station-h:first-child:last-child::before { left: -25px; right: -25px; }
+        
+        .station-dot-h {
+            width: 15px; height: 15px; border-radius: 50%;
+            background: #fff; border: 4px solid var(--line-color);
+            z-index: 2; position: relative; margin-bottom: 4px;
+        }
+        
+        /* 修复：站名不再死死限制在20px内，防止竖排 */
+        .station-name-h {
+            width: auto; 
+            max-width: 60px; 
+            word-break: break-all;
+            text-align: center; line-height: 1.2;
+            font-size: 12px; font-weight: 700; color: #222;
+            background: rgba(255, 255, 255, 0.95);
+            padding: 2px 4px; border-radius: 4px;
+            position: absolute; top: 24px; left: 50%; transform: translateX(-50%);
+            z-index: 3;
+        }
+        
+        /* 修复：换乘标签作为兄弟节点，水平居中，不占额外高度 */
+        .transfer-h { 
+            font-size: 14px; 
+            color: #888; 
+            display: flex; 
+            align-items: center; 
+            margin: 0 10px;
+            align-self: center;
+            flex-shrink: 0;
+            font-weight: 600; 
+        }
+        .transfer-h::after { content: '→'; margin-left: 5px; font-size: 16px; }
+        
+        /* 统计栏固定在底部，不会被遮挡 */
+        .stats-h {
+            margin-top: 5px;
+            padding-top: 10px;
+            border-top: 1px solid #eee;
+            width: 100%;
+            display: block;
+            font-size: 13px;
+            color: #555;
+            font-weight: 500;
+            flex-shrink: 0; /* 防止被压缩 */
+            text-align: center;
+        }
+        .stats-h span { font-weight: 700; color: #1a2332; }
+        
+        #legend { position: absolute; bottom: 20px; right: 20px; background: rgba(255, 255, 255, 0.92); border-radius: 12px; padding: 12px 16px; box-shadow: 0 4px 16px rgba(0, 0, 0, 0.12); font-size: 12px; max-height: 40vh; overflow-y: auto; border: 1px solid rgba(255, 255, 255, 0.4); }
+        #legend .title { font-weight: 600; font-size: 13px; margin-bottom: 6px; color: #333; }
+        #legend .item { display: flex; align-items: center; gap: 8px; padding: 3px 0; }
+        #legend .color-box { width: 20px; height: 5px; border-radius: 2px; flex-shrink: 0; }
+
+        @media (max-width: 768px) {
+            #zoom-controls { left: 10px; padding: 6px; gap: 6px; }
+            #zoom-controls button { width: 32px; height: 32px; font-size: 16px; }
+            #legend { bottom: 10px; right: 10px; max-height: 30vh; font-size: 10px; padding: 8px 10px; }
+            #info-panel { bottom: 10px; width: 95%; padding: 10px 12px; }
+            .segment-wrap { padding: 0 10px; }
+            .stations-h { padding: 15px 10px 0; }
+            .station-name-h { top: 22px; }
+        }
+    </style>
+</head>
+<body>
+    <div id="header">
+        <h1>🚇 <span>地铁线网图</span></h1>
+        <div class="info">拖拽平移 | 滚轮/双指缩放 | 点击站点规划路径</div>
+    </div>
+    <div id="toolbar">
+        <div class="status">
+            <span id="statusText">点击站点选择 <b>起点</b></span>
+            <span id="selectedDisplay"></span>
+        </div>
+        <button class="btn reset" id="resetBtn">重置</button>
+        <button class="btn" id="clearPathBtn">清除路径</button>
+    </div>
+    <div id="canvas-wrap">
+        <canvas id="mapCanvas"></canvas>
+        <div id="zoom-controls">
+            <button id="zoomInBtn" title="放大">+</button>
+            <button id="zoomOutBtn" title="缩小">-</button>
+            <button id="resetViewBtn" class="reset-view" title="重置视图">重置</button>
+        </div>
+        <div id="info-panel"></div>
+        <div id="legend"></div>
+    </div>
+
+    <script>
+        // 完整数据
+        const rawData = {"mapEnabled":false,"graph":{"options":{"type":"directed","multi":true,"allowSelfLoops":true},"attributes":{},"nodes":[{"key":"stn_TCQ5JsKuA-","attributes":{"visible":true,"zIndex":0,"x":-450,"y":45,"type":"gzmtr-basic","gzmtr-basic":{"names":["机场","Airport"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"14","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_wrJdyPqRgS","attributes":{"visible":true,"zIndex":0,"x":-405,"y":15,"type":"gzmtr-basic","gzmtr-basic":{"names":["机场东","Airport East"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"13","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-4.600000000000001,"y":19.6,"anchor":"start"}}}},{"key":"stn_qFPdO2TEx6","attributes":{"visible":true,"zIndex":0,"x":-330,"y":-20,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["迎宾大道","Yingbin Avenue"],"nameOffsetX":"middle","nameOffsetY":"bottom","transfer":[[["other","other","#ffe370","#000","14","04"],["other","other","#009995","#fff","15","12"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":1,"osiPosition":"none"}}},{"key":"stn__QP7Dof-3X","attributes":{"visible":true,"zIndex":0,"x":-265,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["建设二路","Jianshe 2nd Road"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"11","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_myotQv-CWA","attributes":{"visible":true,"zIndex":0,"x":-205,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["田村","Tiancun"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"10","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_VthcDG6rpL","attributes":{"visible":true,"zIndex":0,"x":-145,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["麦田","Maitian"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"09","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_C08UG9_GRi","attributes":{"visible":true,"zIndex":0,"x":-65,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["主城北•树场","Zhucheng North - Shuchang"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"08","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_gC6Kmy8qwo","attributes":{"visible":true,"zIndex":0,"x":220,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["蜜蜂花园东","Bee gardon East"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"07","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_vnonqY1x7X","attributes":{"visible":true,"zIndex":0,"x":380,"y":-20,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["新开发区","Xinkaifaqu"],"nameOffsetX":"left","nameOffsetY":"top","transfer":[[["other","other","#ffab00","#fff","16","08"],["other","other","#009995","#fff","15","06"],["other","other","#d80000","#fff","18","05"],["other","other","#d9ff14","#000","17","01"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":1,"osiPosition":"none","preciseNameOffsets":{"x":-33.62999954223633,"y":-10.419999313354488,"anchor":"end"}}}},{"key":"stn_7D6xD2ZmJG","attributes":{"visible":true,"zIndex":0,"x":590,"y":-20,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["大竹林东","Dazhulin East"],"nameOffsetX":"left","nameOffsetY":"bottom","transfer":[[["other","other","#d9ff14","#000","17","13"],["other","other","#009995","#fff","15","05"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":1,"osiPosition":"none","preciseNameOffsets":{"x":-10.529999542236329,"y":18.10999931335449,"anchor":"end"}}}},{"key":"stn_xpMyvpae4t","attributes":{"visible":true,"zIndex":0,"x":645,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["樱花林西","Yinghualin West"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"04","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_05PdSFqygc","attributes":{"visible":true,"zIndex":0,"x":710,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["樱花村","Yinghuacun"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"03","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_FkqKprl64x","attributes":{"visible":true,"zIndex":0,"x":775,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["建设一路","Jianshe 1st Road"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_9RI9_g7U7p","attributes":{"visible":true,"zIndex":0,"x":850,"y":-20,"type":"gzmtr-basic","gzmtr-basic":{"names":["樱花林","Yinghualin"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#009995","#fff"],"lineCode":"15","stationCode":"01","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_89hiPDZ_iL","attributes":{"visible":true,"zIndex":0,"x":380,"y":-95,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["点赞北","Dianzan North"],"nameOffsetX":"right","nameOffsetY":"middle","transfer":[[["other","other","#d9ff14","#000","17","02"],["other","other","#ffab00","#fff","16","09"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":1,"osiPosition":"none"}}},{"key":"stn_5PufbAHe7f","attributes":{"visible":true,"zIndex":0,"x":380,"y":-175,"type":"gzmtr-basic","gzmtr-basic":{"names":["苍林路","Canglin Road"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"10","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_1WWreTbaVP","attributes":{"visible":true,"zIndex":0,"x":380,"y":-210,"type":"gzmtr-basic","gzmtr-basic":{"names":["建设四路","Jianshe 4th Road"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"11","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_JToWG6Pdpb","attributes":{"visible":true,"zIndex":0,"x":380,"y":-250,"type":"gzmtr-basic","gzmtr-basic":{"names":["生存二区","Shengcunerqu"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"12","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_AMH1IOJoAN","attributes":{"visible":true,"zIndex":0,"x":355,"y":-305,"type":"gzmtr-basic","gzmtr-basic":{"names":["生存二区北","Shengcunerqu North"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"13","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_DzFdk-K5N_","attributes":{"visible":true,"zIndex":0,"x":380,"y":55,"type":"gzmtr-basic","gzmtr-basic":{"names":["村民西","Cunmin West"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"07","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_5yYS6wGT5x","attributes":{"visible":true,"zIndex":0,"x":390,"y":235,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["动物园","Zoo"],"nameOffsetX":"left","nameOffsetY":"bottom","transfer":[[["other","other","#d9ff14","#000","17","08"],["other","other","#ffab00","#fff","16","06"],["other","other","#8dff04","#fff","1","07"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":0,"osiPosition":"none","preciseNameOffsets":{"x":-10.520000457763674,"y":38.08999931335449,"anchor":"end"}}}},{"key":"stn_VU1mxy6AyO","attributes":{"visible":true,"zIndex":0,"x":430,"y":305,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["动物园南","Zoo South"],"nameOffsetX":"right","nameOffsetY":"middle","transfer":[[["other","other","#ffab00","#fff","16","05"],["other","other","#8dff04","#fff","1","08"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":0,"osiPosition":"none"}}},{"key":"stn_zyqyavYMNy","attributes":{"visible":true,"zIndex":0,"x":485,"y":360,"type":"gzmtr-basic","gzmtr-basic":{"names":["建设三路","Jianshe 3rd Road"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"04","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_n68jdszmpS","attributes":{"visible":true,"zIndex":0,"x":535,"y":410,"type":"gzmtr-basic","gzmtr-basic":{"names":["植物园","Botanical Gardon"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"03","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_2isdy8hpBI","attributes":{"visible":true,"zIndex":0,"x":570,"y":480,"type":"gzmtr-basic","gzmtr-basic":{"names":["沼湖","Zhaohu"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_p_eRdNsZ89","attributes":{"visible":true,"zIndex":0,"x":570,"y":540,"type":"gzmtr-basic","gzmtr-basic":{"names":["下界森林北","Xiajiesenlin North"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#ffab00","#fff"],"lineCode":"16","stationCode":"01","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_slKzxYXb_e","attributes":{"visible":true,"zIndex":0,"x":180,"y":-120,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["华子北","Huazi North"],"nameOffsetX":"left","nameOffsetY":"middle","transfer":[[["other","other","#00e6e8","#fff","2","07"],["other","other","#d9ff14","#000","17","03"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":1,"osiPosition":"none","preciseNameOffsets":{"x":13.170000457763672,"y":-28.8,"anchor":"end"}}}},{"key":"stn_vFdarORZo8","attributes":{"visible":true,"zIndex":0,"x":85,"y":-60,"type":"gzmtr-basic","gzmtr-basic":{"names":["迷你狗坟东","Minigoufen East"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"04","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-18.4,"y":5.1,"anchor":"end"}}}},{"key":"stn_fb40M6Fdka","attributes":{"visible":true,"zIndex":0,"x":70,"y":20,"type":"gzmtr-basic","gzmtr-basic":{"names":["树场北","Shuchang North"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"05","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-3.8000000000000007,"y":-13.8,"anchor":"end"}}}},{"key":"stn_t0Y04CE6Gb","attributes":{"visible":true,"zIndex":0,"x":100,"y":210,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["三连西","Sanlian West"],"nameOffsetX":"left","nameOffsetY":"middle","transfer":[[["other","other","#0f00d8","#fff","13","04"],["other","other","#d9ff14","#000","17","06"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":0,"osiPosition":"none","preciseNameOffsets":{"x":-16.82999954223633,"y":8.4,"anchor":"end"}}}},{"key":"stn_N0KiZgKhDd","attributes":{"visible":true,"zIndex":0,"x":215,"y":235,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["三连","Sanlian"],"nameOffsetX":"middle","nameOffsetY":"bottom","transfer":[[["other","other","#00e6e8","#fff","2","03"],["other","other","#d9ff14","#000","17","07"],["other","other","#8dff04","#fff","1","01"],["other","other","#0f00d8","#fff","13"," 04"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":1,"osiPosition":"none","preciseNameOffsets":{"x":-11,"y":37.58999931335449,"anchor":"middle"}}}},{"key":"stn_qSQdU3Xzks","attributes":{"visible":true,"zIndex":0,"x":440,"y":235,"type":"gzmtr-basic","gzmtr-basic":{"names":["动物园东","Zoo East"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"09","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_QOT0W1DUyq","attributes":{"visible":true,"zIndex":0,"x":480,"y":235,"type":"gzmtr-basic","gzmtr-basic":{"names":["上北泽","Shangbeize"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"10","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_DU5lgkkumN","attributes":{"visible":true,"zIndex":0,"x":520,"y":235,"type":"gzmtr-basic","gzmtr-basic":{"names":["下北泽","Xiabeize"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"11","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_gwBJVAWOf7","attributes":{"visible":true,"zIndex":0,"x":560,"y":235,"type":"gzmtr-basic","gzmtr-basic":{"names":["大竹林","Dazhulin"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#d9ff14","#000"],"lineCode":"17","stationCode":"12","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_3Dpplw5V2a","attributes":{"visible":true,"zIndex":0,"x":530,"y":-60,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["森丘","Senqiu"],"nameOffsetX":"middle","nameOffsetY":"top","transfer":[[["other","other","#ffe370","#000","14","01"],["other","other","#d9ff14","#000","17","14"],["other","other","#d80000","#fff","18","06"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":-1,"osiPosition":"none"}}},{"key":"stn_b4Iu1li64t","attributes":{"visible":true,"zIndex":0,"x":260.1,"y":-69.6,"type":"gzmtr-basic","gzmtr-basic":{"names":["生存一区","Shengcunyiqu"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#ffe370","#000"],"lineCode":"14","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-12.7,"y":-14.959999999999999,"anchor":"middle"}}}},{"key":"stn_kNFZwpCgLr","attributes":{"visible":true,"zIndex":0,"x":-45,"y":-70,"type":"gzmtr-basic","gzmtr-basic":{"names":["村民繁殖基地","Villagers Breeding Base"],"nameOffsetX":"middle","nameOffsetY":"bottom","color":["other","other","#ffe370","#000"],"lineCode":"14","stationCode":"03","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_WP5HVXJaQU","attributes":{"visible":true,"zIndex":0,"x":-450,"y":15,"type":"gzmtr-basic","gzmtr-basic":{"names":["机场北","Airport North"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#ffe370","#000"],"lineCode":"14","stationCode":"05","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_PvdLx-ulXJ","attributes":{"visible":true,"zIndex":0,"x":175,"y":155,"type":"gzmtr-basic","gzmtr-basic":{"names":["华子南","Huazi South"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#8dff04","#fff"],"lineCode":"1","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_RoYyCjsazP","attributes":{"visible":true,"zIndex":0,"x":135,"y":25,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["主城北","Zhucheng North"],"nameOffsetX":"right","nameOffsetY":"middle","transfer":[[["other","other","#8dff04","#fff","1","04"],["other","other","#d80000","#fff","18","02"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":0,"osiPosition":"none"}}},{"key":"stn_jwmHM0Hg7g","attributes":{"visible":true,"zIndex":0,"x":135,"y":100,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["主城","Zhucheng"],"nameOffsetX":"right","nameOffsetY":"middle","transfer":[[["other","other","#8dff04","#fff","1","03"],["other","other","#d80000","#fff","18","01"]]],"open":true,"secondaryNames":["",""],"columns":2,"topHeavy":false,"anchorAt":0,"osiPosition":"none"}}},{"key":"stn_lZgSGfrrbU","attributes":{"visible":true,"zIndex":0,"x":185,"y":-60,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["蜜蜂花园","Bee Gardon"],"nameOffsetX":"middle","nameOffsetY":"bottom","transfer":[[["other","other","#8dff04","#fff","1","05"],["other","other","#d80000","#fff","18","03"],["other","other","#0f00d8","#fff","13","01"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":0,"osiPosition":"none","preciseNameOffsets":{"x":-0.3999999999999999,"y":-20.430000915527337,"anchor":"middle"}}}},{"key":"stn_Bo0Iaa3z2e","attributes":{"visible":true,"zIndex":0,"x":240,"y":-60,"type":"gzmtr-int-2024","gzmtr-int-2024":{"names":["",""],"nameOffsetX":"middle","nameOffsetY":"top","transfer":[[["other","other","#8dff04","#fff","1","06"],["other","other","#d80000","#fff","18","04"]]],"open":true,"secondaryNames":["",""],"columns":1,"topHeavy":false,"anchorAt":0,"osiPosition":"none"}}},{"key":"stn_UeJ92TeSJL","attributes":{"visible":true,"zIndex":0,"x":451.2,"y":363.8,"type":"gzmtr-basic","gzmtr-basic":{"names":["湿地公园","Shidi Park"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#8dff04","#fff"],"lineCode":"1","stationCode":"09","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_jjpk-cU4Bx","attributes":{"visible":true,"zIndex":0,"x":615,"y":-110,"type":"gzmtr-basic","gzmtr-basic":{"names":["森丘东","Senqiu East"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#d80000","#fff"],"lineCode":"18","stationCode":"07","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_dDT1Iyxm8J","attributes":{"visible":true,"zIndex":0,"x":10,"y":40,"type":"gzmtr-basic","gzmtr-basic":{"names":["迷你狗坟西","Minigoufen West"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"01","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_Lsbl0MCBqm","attributes":{"visible":true,"zIndex":0,"x":160,"y":215,"type":"gzmtr-basic","gzmtr-basic":{"names":["二连","Erlian"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-0.8999999999999997,"y":-14.1,"anchor":"start"}}}},{"key":"stn_Rhg4NHBnXx","attributes":{"visible":true,"zIndex":0,"x":255,"y":210,"type":"gzmtr-basic","gzmtr-basic":{"names":["村民","Cunmin"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"04","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_iBdFOeWsgO","attributes":{"visible":true,"zIndex":0,"x":285,"y":145,"type":"gzmtr-basic","gzmtr-basic":{"names":["一公里","Yigongli"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"05","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_yKD7VYiVLZ","attributes":{"visible":true,"zIndex":0,"x":285,"y":25,"type":"gzmtr-basic","gzmtr-basic":{"names":["二公里","Ergongli"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"06","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_qZt9uMn5YT","attributes":{"visible":true,"zIndex":0,"x":10,"y":-95,"type":"gzmtr-basic","gzmtr-basic":{"names":["迷你狗坟","Minigoufen"],"nameOffsetX":"left","nameOffsetY":"middle","color":["other","other","#00e6e8","#fff"],"lineCode":"2","stationCode":"08","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_BQOdUd8hka","attributes":{"visible":true,"zIndex":0,"x":100,"y":50,"type":"gzmtr-basic","gzmtr-basic":{"names":["树场","Shuchang"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#0f00d8","#fff"],"lineCode":"13","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":2.5999999999999996,"y":19.6,"anchor":"start"}}}},{"key":"stn_VgG6CE6WYb","attributes":{"visible":true,"zIndex":0,"x":100,"y":130,"type":"gzmtr-basic","gzmtr-basic":{"names":["树场南","Shuchang South"],"nameOffsetX":"right","nameOffsetY":"middle","color":["other","other","#0f00d8","#fff"],"lineCode":"13","stationCode":"03","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":6.699999999999999,"y":18.8,"anchor":"start"}}}},{"key":"stn_ZzayBxzpkn","attributes":{"visible":true,"zIndex":0,"x":360,"y":115,"type":"gzmtr-basic","gzmtr-basic":{"names":["二公里西","Ergongli West"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#0f00d8","#fff"],"lineCode":"13","stationCode":"05","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-12.6,"y":-13.86,"anchor":"middle"}}}},{"key":"stn_R_0Pr1emBp","attributes":{"visible":true,"zIndex":0,"x":-330,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["村民繁殖基地","Villagers Breeding Base"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"01","open":true,"secondaryNames":["",""],"tram":false,"preciseNameOffsets":{"x":-4.8,"y":-16.36,"anchor":"middle"}}}},{"key":"stn_mQpyfeklej","attributes":{"visible":true,"zIndex":0,"x":-255,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["迷你狗坟东","Minigoufen East"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"02","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_oy4eWCAvHj","attributes":{"visible":true,"zIndex":0,"x":-180,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["圆台花园","Yuantai Gardon"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"03","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_8vsGpFyC-R","attributes":{"visible":true,"zIndex":0,"x":-110,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["杜鹃树林","Azalea forest"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"04","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_QOWH9JapJW","attributes":{"visible":true,"zIndex":0,"x":-35,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["三连","Sanlian"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"05","open":true,"secondaryNames":["",""],"tram":false}}},{"key":"stn_k8NInVhtiY","attributes":{"visible":true,"zIndex":0,"x":35,"y":425,"type":"gzmtr-basic","gzmtr-basic":{"names":["动物园","Zoo"],"nameOffsetX":"middle","nameOffsetY":"top","color":["other","other","#858585","#fff"],"lineCode":"G","stationCode":"06","open":true,"secondaryNames":["",""],"tram":false}}}],"edges":[{"key":"line_N_H1UuRp8z","source":"stn_TCQ5JsKuA-","target":"stn_wrJdyPqRgS","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line__Ebnpzerji","source":"stn_qFPdO2TEx6","target":"stn_wrJdyPqRgS","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_mAOxSM_dRn","source":"stn_qFPdO2TEx6","target":"stn__QP7Dof-3X","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_4S8fpoSifv","source":"stn__QP7Dof-3X","target":"stn_myotQv-CWA","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_qiuGzKoKwh","source":"stn_myotQv-CWA","target":"stn_VthcDG6rpL","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_kYkS9FL9B5","source":"stn_VthcDG6rpL","target":"stn_C08UG9_GRi","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_-EbyBTD2aG","source":"stn_C08UG9_GRi","target":"stn_gC6Kmy8qwo","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_w9IcTJMImL","source":"stn_gC6Kmy8qwo","target":"stn_vnonqY1x7X","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_AZUXPGSBiu","source":"stn_vnonqY1x7X","target":"stn_7D6xD2ZmJG","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_CoTdE9inFP","source":"stn_xpMyvpae4t","target":"stn_7D6xD2ZmJG","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_BXxrXtqMCe","source":"stn_xpMyvpae4t","target":"stn_05PdSFqygc","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_A76EdpN7-G","source":"stn_05PdSFqygc","target":"stn_FkqKprl64x","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_hHYYHA89O8","source":"stn_FkqKprl64x","target":"stn_9RI9_g7U7p","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#009995","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_GUKuCVN1Aw","source":"stn_JToWG6Pdpb","target":"stn_AMH1IOJoAN","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_cPkosMfuqa","source":"stn_JToWG6Pdpb","target":"stn_1WWreTbaVP","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_2wAv8a-6qU","source":"stn_1WWreTbaVP","target":"stn_5PufbAHe7f","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_yqkuEfMAwn","source":"stn_5PufbAHe7f","target":"stn_89hiPDZ_iL","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_6FXskbyS16","source":"stn_89hiPDZ_iL","target":"stn_vnonqY1x7X","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_NyF7hIZEM-","source":"stn_vnonqY1x7X","target":"stn_DzFdk-K5N_","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_HQs_qfnMBe","source":"stn_DzFdk-K5N_","target":"stn_5yYS6wGT5x","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":-21,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_kgfZgf7ob5","source":"stn_VU1mxy6AyO","target":"stn_zyqyavYMNy","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_NW1NTcuERW","source":"stn_zyqyavYMNy","target":"stn_n68jdszmpS","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_xtkzMD6wMl","source":"stn_n68jdszmpS","target":"stn_2isdy8hpBI","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"to","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_D_HBeorpRb","source":"stn_2isdy8hpBI","target":"stn_p_eRdNsZ89","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_tdydnqe0fq","source":"stn_vFdarORZo8","target":"stn_slKzxYXb_e","attributes":{"visible":true,"zIndex":0,"type":"diagonal","style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1,"diagonal":{"startFrom":"to","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10}}},{"key":"line_xO0acX9HXX","source":"stn_fb40M6Fdka","target":"stn_vFdarORZo8","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_K3hmfpYqer","source":"stn_fb40M6Fdka","target":"stn_t0Y04CE6Gb","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_p_7jMvHJSD","source":"stn_N0KiZgKhDd","target":"stn_t0Y04CE6Gb","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_DDh1PukqsK","source":"stn_5yYS6wGT5x","target":"stn_N0KiZgKhDd","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_kZsNeEqxKK","source":"stn_qSQdU3Xzks","target":"stn_5yYS6wGT5x","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_CDLycapV0-","source":"stn_QOT0W1DUyq","target":"stn_qSQdU3Xzks","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_1b7U6G4GqV","source":"stn_DU5lgkkumN","target":"stn_QOT0W1DUyq","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_ZiQy-LYnBS","source":"stn_DU5lgkkumN","target":"stn_gwBJVAWOf7","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_gJ_gDElY_-","source":"stn_7D6xD2ZmJG","target":"stn_gwBJVAWOf7","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1,"perpendicular":{"startFrom":"to","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33}}},{"key":"line_Om7eIc_mF8","source":"stn_7D6xD2ZmJG","target":"stn_3Dpplw5V2a","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"to","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_I9UcJKk0Sz","source":"stn_b4Iu1li64t","target":"stn_3Dpplw5V2a","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":11,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffe370","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_rx_xqjolIi","source":"stn_kNFZwpCgLr","target":"stn_b4Iu1li64t","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffe370","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_lyVG4T7d7q","source":"stn_N0KiZgKhDd","target":"stn_PvdLx-ulXJ","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":-21,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_3vo2FGcl-N","source":"stn_jwmHM0Hg7g","target":"stn_PvdLx-ulXJ","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_dPHFv_jboP","source":"stn_jwmHM0Hg7g","target":"stn_RoYyCjsazP","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_yA_Up02YA5","source":"stn_lZgSGfrrbU","target":"stn_RoYyCjsazP","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_DTlZG14Shl","source":"stn_Bo0Iaa3z2e","target":"stn_lZgSGfrrbU","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_wvWNGIZ_NW","source":"stn_RoYyCjsazP","target":"stn_jwmHM0Hg7g","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":21.5,"offsetTo":21.5,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_JTLC0WpYO9","source":"stn_lZgSGfrrbU","target":"stn_RoYyCjsazP","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":11,"offsetTo":21.5,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_oPKjWh0Vni","source":"stn_lZgSGfrrbU","target":"stn_Bo0Iaa3z2e","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":11,"offsetTo":11,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_fsaifq2E-4","source":"stn_3Dpplw5V2a","target":"stn_jjpk-cU4Bx","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":11,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_XZZkGLO5ur","source":"stn_dDT1Iyxm8J","target":"stn_Lsbl0MCBqm","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_73OVWsigqv","source":"stn_N0KiZgKhDd","target":"stn_Lsbl0MCBqm","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_tYxB9K4BBo","source":"stn_N0KiZgKhDd","target":"stn_Rhg4NHBnXx","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_qO_u6upMca","source":"stn_Rhg4NHBnXx","target":"stn_iBdFOeWsgO","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"to","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_lk0zEP99P_","source":"stn_iBdFOeWsgO","target":"stn_yKD7VYiVLZ","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_vbG4wABtaD","source":"stn_slKzxYXb_e","target":"stn_yKD7VYiVLZ","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":-11,"offsetTo":0,"roundCornerFactor":18.33},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_JL1b1kriIb","source":"stn_slKzxYXb_e","target":"stn_qZt9uMn5YT","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":-11,"offsetTo":0,"roundCornerFactor":18.33},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_Apt-gsZM61","source":"stn_qZt9uMn5YT","target":"stn_dDT1Iyxm8J","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"chongqingrt-loop","reconcileId":"","parallelIndex":-1,"chongqingrt-loop":{"color":["other","other","#00e6e8","#fff"]}}},{"key":"line_R7mCsVSSaR","source":"stn_BQOdUd8hka","target":"stn_VgG6CE6WYb","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#0f00d8","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_2oEWPgfd4k","source":"stn_VgG6CE6WYb","target":"stn_t0Y04CE6Gb","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#0f00d8","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_ItQLvku_2p","source":"stn_N0KiZgKhDd","target":"stn_ZzayBxzpkn","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":11,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#0f00d8","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_ImWDOzg1l4","source":"stn_N0KiZgKhDd","target":"stn_t0Y04CE6Gb","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":11,"offsetTo":-5,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#0f00d8","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_pG8uknAHwr","source":"stn_mQpyfeklej","target":"stn_R_0Pr1emBp","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#858585","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_v5xfL9rj8u","source":"stn_mQpyfeklej","target":"stn_oy4eWCAvHj","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#858585","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_ZvgyWR12n8","source":"stn_oy4eWCAvHj","target":"stn_8vsGpFyC-R","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#858585","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_eAgyq0gzaM","source":"stn_8vsGpFyC-R","target":"stn_QOWH9JapJW","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#858585","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_r6N0cSjeU7","source":"stn_QOWH9JapJW","target":"stn_k8NInVhtiY","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#858585","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_Hp9Z4cywZk","source":"stn_5yYS6wGT5x","target":"stn_VU1mxy6AyO","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffab00","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_LuigpzQmmY","source":"stn_5yYS6wGT5x","target":"stn_VU1mxy6AyO","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_71kDu9tK2c","source":"stn_VU1mxy6AyO","target":"stn_UeJ92TeSJL","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_w0PYPRo6MZ","source":"stn_kNFZwpCgLr","target":"stn_qFPdO2TEx6","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffe370","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_zEEMn6cJjk","source":"stn_qFPdO2TEx6","target":"stn_WP5HVXJaQU","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#ffe370","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_AwwEzWrZdy","source":"stn_lZgSGfrrbU","target":"stn_BQOdUd8hka","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#0f00d8","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_YH2uB0hcAD","source":"stn_89hiPDZ_iL","target":"stn_slKzxYXb_e","attributes":{"visible":true,"zIndex":0,"type":"ro-perp","ro-perp":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_CQc3xCu0_g","source":"stn_Bo0Iaa3z2e","target":"stn_5yYS6wGT5x","attributes":{"visible":true,"zIndex":0,"type":"perpendicular","perpendicular":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":18.33},"style":"single-color","single-color":{"color":["other","other","#8dff04","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_Eixd-N9Vn6","source":"stn_Bo0Iaa3z2e","target":"stn_vnonqY1x7X","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_NhqwPuDQhm","source":"stn_vnonqY1x7X","target":"stn_3Dpplw5V2a","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d80000","#fff"]},"reconcileId":"","parallelIndex":-1}},{"key":"line_yvK5Jc4plh","source":"stn_vnonqY1x7X","target":"stn_89hiPDZ_iL","attributes":{"visible":true,"zIndex":0,"type":"diagonal","diagonal":{"startFrom":"from","offsetFrom":0,"offsetTo":0,"roundCornerFactor":10},"style":"single-color","single-color":{"color":["other","other","#d9ff14","#000"]},"reconcileId":"","parallelIndex":-1}}]},"mapStyle":{},"svgViewBoxZoom":150,"svgViewBoxMin":{"x":-622.8128406181122,"y":-177.87645669854754},"version":78,"images":[]};
+
+        const data = rawData;
+        function isStation(node) { const t = node.attributes.type; return t === 'gzmtr-basic' || t === 'gzmtr-int-2024'; }
+        function getStationName(node) { if (node.attributes.type === 'gzmtr-basic') return node.attributes['gzmtr-basic']?.names?.[0]; if (node.attributes.type === 'gzmtr-int-2024') return node.attributes['gzmtr-int-2024']?.names?.[0]; return node.key; }
+        function getStationColor(node) { let c = null; if (node.attributes.type === 'gzmtr-basic') c = node.attributes['gzmtr-basic']?.color; else if (node.attributes.type === 'gzmtr-int-2024') { const tr = node.attributes['gzmtr-int-2024']?.transfer; if (tr && tr.length > 0 && tr[0].length > 0) c = tr[0][0]; } return (c && c.length >= 3) ? c[2] : '#888'; }
+        function getStationLine(node) { if (node.attributes.type === 'gzmtr-basic') return node.attributes['gzmtr-basic']?.lineCode || ''; if (node.attributes.type === 'gzmtr-int-2024') { const tr = node.attributes['gzmtr-int-2024']?.transfer; return (tr && tr.length > 0 && tr[0].length > 0) ? (tr[0][0][4] || '') : ''; } return ''; }
+
+        const stationMap = {};
+        const stationNodes = [];
+        data.graph.nodes.forEach(node => {
+            if (isStation(node)) {
+                const key = node.key; const name = getStationName(node); const x = node.attributes.x || 0; const y = node.attributes.y || 0;
+                const color = getStationColor(node); const line = getStationLine(node);
+                let nameOffsetX = 'middle', nameOffsetY = 'top', preciseX = 0, preciseY = 0;
+                if (node.attributes.type === 'gzmtr-basic') { const info = node.attributes['gzmtr-basic']; if (info) { nameOffsetX = info.nameOffsetX || 'middle'; nameOffsetY = info.nameOffsetY || 'top'; if (info.preciseNameOffsets) { preciseX = info.preciseNameOffsets.x || 0; preciseY = info.preciseNameOffsets.y || 0; } } }
+                else if (node.attributes.type === 'gzmtr-int-2024') { const info = node.attributes['gzmtr-int-2024']; if (info) { nameOffsetX = info.nameOffsetX || 'middle'; nameOffsetY = info.nameOffsetY || 'top'; if (info.preciseNameOffsets) { preciseX = info.preciseNameOffsets.x || 0; preciseY = info.preciseNameOffsets.y || 0; } } }
+                let isTransfer = false; let transferLines = [];
+                if (node.attributes.type === 'gzmtr-int-2024') { const info = node.attributes['gzmtr-int-2024']; if (info && info.transfer) { isTransfer = true; info.transfer.forEach(g => { g.forEach(t => { if (t && t.length >= 5) transferLines.push(t[4]); }); }); } }
+                stationMap[key] = { key, name, x, y, color, line, isTransfer, transferLines, nameOffsetX, nameOffsetY, preciseX, preciseY, node };
+                stationNodes.push(stationMap[key]);
+            }
+        });
+
+        const adj = {};
+        stationNodes.forEach(s => { adj[s.key] = []; });
+        function getNodeType(key) { const n = data.graph.nodes.find(n => n.key === key); return n ? n.attributes.type : 'unknown'; }
+        const edges = data.graph.edges;
+        
+        const lineByColor = {};
+        stationNodes.forEach(s => { if (s.color) lineByColor[s.color] = s.line; });
+
+        edges.forEach(edge => {
+            const src = edge.source; const tgt = edge.target;
+            const isSrcStation = isStation(data.graph.nodes.find(n => n.key === src));
+            const isTgtStation = isStation(data.graph.nodes.find(n => n.key === tgt));
+            let edgeColor = '#888'; const attrs = edge.attributes;
+            if (attrs.style === 'single-color' && attrs['single-color']) { const c = attrs['single-color'].color; if (c && c.length >= 3) edgeColor = c[2]; }
+            else if (attrs.style === 'chongqingrt-loop' && attrs['chongqingrt-loop']) { const c = attrs['chongqingrt-loop'].color; if (c && c.length >= 3) edgeColor = c[2]; }
+            let edgeLine = lineByColor[edgeColor] || '';
+            
+            if (isSrcStation && isTgtStation) { 
+                if (adj[src] && adj[tgt]) { 
+                    adj[src].push({ target: tgt, color: edgeColor, line: edgeLine }); 
+                    adj[tgt].push({ target: src, color: edgeColor, line: edgeLine }); 
+                } 
+            }
+        });
+        Object.keys(adj).forEach(k => { const s = new Set(); adj[k] = adj[k].filter(i => { if (s.has(i.target)) return false; s.add(i.target); return true; }); });
+
+        const edgeGroups = {};
+        edges.forEach(edge => {
+            const src = edge.source; const tgt = edge.target;
+            if (isStation(data.graph.nodes.find(n => n.key === src)) && isStation(data.graph.nodes.find(n => n.key === tgt))) {
+                const groupKey = [src, tgt].sort().join('-');
+                if (!edgeGroups[groupKey]) edgeGroups[groupKey] = [];
+                edgeGroups[groupKey].push(edge);
+            }
+        });
+
+        const canvas = document.getElementById('mapCanvas');
+        const ctx = canvas.getContext('2d');
+        const wrap = document.getElementById('canvas-wrap');
+        let W, H, scale = 1, offsetX = 0, offsetY = 0;
+
+        let minX = Infinity, maxX = -Infinity, minY = Infinity, maxY = -Infinity;
+        stationNodes.forEach(s => { if (s.x < minX) minX = s.x; if (s.x > maxX) maxX = s.x; if (s.y < minY) minY = s.y; if (s.y > maxY) maxY = s.y; });
+        const padding = 80; const rangeX = maxX - minX + padding * 2; const rangeY = maxY - minY + padding * 2;
+
+        function resize() {
+            const rect = wrap.getBoundingClientRect(); W = rect.width; H = rect.height;
+            canvas.width = W * devicePixelRatio; canvas.height = H * devicePixelRatio;
+            canvas.style.width = W + 'px'; canvas.style.height = H + 'px'; ctx.scale(devicePixelRatio, devicePixelRatio);
+            const scaleX = (W - 60) / rangeX; const scaleY = (H - 60) / rangeY;
+            scale = Math.min(scaleX, scaleY, 2.8);
+            const cx = (minX + maxX) / 2; const cy = (minY + maxY) / 2;
+            offsetX = W / 2 - cx * scale; offsetY = H / 2 - cy * scale;
+            draw();
+        }
+
+        function toScreen(x, y) { return { sx: x * scale + offsetX, sy: y * scale + offsetY }; }
+
+        function zoomAt(screenX, screenY, newScale) {
+            newScale = Math.max(0.2, Math.min(6, newScale));
+            const worldX = (screenX - offsetX) / scale;
+            const worldY = (screenY - offsetY) / scale;
+            scale = newScale;
+            offsetX = screenX - worldX * scale;
+            offsetY = screenY - worldY * scale;
+            draw();
+        }
+
+        let selectedStart = null; let selectedEnd = null; let pathResult = null;
+
+        function draw() {
+            ctx.clearRect(0, 0, W, H);
+            const grad = ctx.createRadialGradient(W / 2, H / 2, 0, W / 2, H / 2, Math.max(W, H) * 0.7);
+            grad.addColorStop(0, '#f8f9fc'); grad.addColorStop(1, '#e8ecf1');
+            ctx.fillStyle = grad; ctx.fillRect(0, 0, W, H);
+
+            Object.keys(edgeGroups).forEach(groupKey => {
+                const group = edgeGroups[groupKey];
+                group.forEach((edge, index) => {
+                    const src = edge.source; const tgt = edge.target;
+                    const s = stationMap[src]; const t = stationMap[tgt];
+                    if (!s || !t) return;
+
+                    let color = '#888'; const attrs = edge.attributes;
+                    if (attrs.style === 'single-color' && attrs['single-color']) { const c = attrs['single-color'].color; if (c && c.length >= 3) color = c[2]; }
+                    else if (attrs.style === 'chongqingrt-loop' && attrs['chongqingrt-loop']) { const c = attrs['chongqingrt-loop'].color; if (c && c.length >= 3) color = c[2]; }
+
+                    let p1 = toScreen(s.x, s.y);
+                    let p2 = toScreen(t.x, t.y);
+                    
+                    if (group.length > 1) {
+                        const dx = p2.sx - p1.sx;
+                        const dy = p2.sy - p1.sy;
+                        const len = Math.sqrt(dx * dx + dy * dy) || 1;
+                        const nx = -dy / len;
+                        const ny = dx / len;
+                        const offset = (index - (group.length - 1) / 2) * 6;
+                        p1.sx += nx * offset;
+                        p1.sy += ny * offset;
+                        p2.sx += nx * offset;
+                        p2.sy += ny * offset;
+                    }
+
+                    let isPath = false;
+                    if (pathResult && pathResult.edges) { isPath = pathResult.edges.some(e => (e.source === src && e.target === tgt) || (e.source === tgt && e.target === src)); }
+
+                    ctx.beginPath(); ctx.moveTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy);
+                    ctx.lineWidth = isPath ? 6 : 2.5; ctx.strokeStyle = isPath ? '#FF6B35' : color; ctx.globalAlpha = isPath ? 1 : 0.85; ctx.stroke(); ctx.globalAlpha = 1;
+                    if (isPath) { ctx.beginPath(); ctx.moveTo(p1.sx, p1.sy); ctx.lineTo(p2.sx, p2.sy); ctx.lineWidth = 10; ctx.strokeStyle = 'rgba(255,107,53,0.2)'; ctx.stroke(); }
+                });
+            });
+
+            // 注意：此处已彻底删除线路标签的绘制
+
+            const screenNodes = stationNodes.map(s => ({...s, p: toScreen(s.x, s.y)}));
+            screenNodes.sort((a, b) => a.p.sx - b.p.sx);
+            for (let i = 0; i < screenNodes.length; i++) {
+                for (let j = i + 1; j < screenNodes.length; j++) {
+                    if (Math.abs(screenNodes[i].p.sx - screenNodes[j].p.sx) < 35 && Math.abs(screenNodes[i].p.sy - screenNodes[j].p.sy) < 20) {
+                        screenNodes[j].nameOffsetY = 'bottom';
+                    }
+                }
+            }
+
+            screenNodes.forEach(s => {
+                const p = s.p;
+                const radius = 7; // 普通站与换乘站半径一致
+                const isStart = selectedStart === s.key; const isEnd = selectedEnd === s.key; const isPathNode = pathResult && pathResult.nodes && pathResult.nodes.includes(s.key);
+                if (isStart || isEnd || isPathNode) {
+                    const glow = ctx.createRadialGradient(p.sx, p.sy, 0, p.sx, p.sy, radius + 14);
+                    if (isStart) { glow.addColorStop(0, 'rgba(76,175,80,0.5)'); glow.addColorStop(1, 'rgba(76,175,80,0)'); }
+                    else if (isEnd) { glow.addColorStop(0, 'rgba(244,67,54,0.5)'); glow.addColorStop(1, 'rgba(244,67,54,0)'); }
+                    else { glow.addColorStop(0, 'rgba(255,107,53,0.4)'); glow.addColorStop(1, 'rgba(255,107,53,0)'); }
+                    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius + 14, 0, Math.PI * 2); ctx.fillStyle = glow; ctx.fill();
+                }
+                ctx.beginPath(); ctx.arc(p.sx, p.sy, radius + 2, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#ddd'; ctx.lineWidth = 0.5; ctx.stroke();
+                
+                // 核心：换乘站黑边白底，无黑点；普通站颜色填充白边
+                if (s.isTransfer) {
+                    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); ctx.fillStyle = '#fff'; ctx.fill(); ctx.strokeStyle = '#000'; ctx.lineWidth = 2; ctx.stroke();
+                } else {
+                    ctx.beginPath(); ctx.arc(p.sx, p.sy, radius, 0, Math.PI * 2); const color = s.color || '#888'; ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+                }
+                
+                if (isStart) { ctx.beginPath(); ctx.arc(p.sx, p.sy, radius + 6, 0, Math.PI * 2); ctx.strokeStyle = '#4caf50'; ctx.lineWidth = 3; ctx.stroke(); ctx.font = 'bold 13px sans-serif'; ctx.fillStyle = '#4caf50'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('起点', p.sx, p.sy - radius - 10); }
+                if (isEnd) { ctx.beginPath(); ctx.arc(p.sx, p.sy, radius + 6, 0, Math.PI * 2); ctx.strokeStyle = '#f44336'; ctx.lineWidth = 3; ctx.stroke(); ctx.font = 'bold 13px sans-serif'; ctx.fillStyle = '#f44336'; ctx.textAlign = 'center'; ctx.textBaseline = 'bottom'; ctx.fillText('终点', p.sx, p.sy - radius - 10); }
+
+                let name = s.name;
+                if (name && name !== '' && name !== ' ') {
+                    let tx = p.sx, ty = p.sy; const ox = s.preciseX || 0; const oy = s.preciseY || 0; const offset = 14;
+                    switch (s.nameOffsetX) { case 'left': tx = p.sx - offset + ox; break; case 'right': tx = p.sx + offset + ox; break; default: tx = p.sx + ox; }
+                    switch (s.nameOffsetY) { case 'top': ty = p.sy - offset + oy; break; case 'bottom': ty = p.sy + offset + oy; break; default: ty = p.sy + oy; }
+                    ctx.font = 'bold 13px "PingFang SC", "Segoe UI", sans-serif';
+                    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+                    ctx.shadowColor = 'rgba(255,255,255,0.9)'; ctx.shadowBlur = 6; ctx.fillStyle = '#1a2332';
+                    ctx.fillText(name, tx, ty); ctx.shadowBlur = 0;
+                }
+            });
+            updateLegend();
+            updateInfoPanel();
+        }
+
+        function getStationAt(mx, my) { let best = null; let bestDist = 25; stationNodes.forEach(s => { const p = toScreen(s.x, s.y); const dx = mx - p.sx, dy = my - p.sy; const dist = Math.sqrt(dx * dx + dy * dy); if (dist < bestDist) { bestDist = dist; best = s; } }); return best; }
+
+        let isPointerDown = false; let startX = 0, startY = 0; let startOffsetX = 0, startOffsetY = 0; let isDragging = false;
+        canvas.addEventListener('mousedown', (e) => { isPointerDown = true; startX = e.clientX; startY = e.clientY; startOffsetX = offsetX; startOffsetY = offsetY; isDragging = false; });
+        window.addEventListener('mousemove', (e) => { if (!isPointerDown) return; const dx = e.clientX - startX; const dy = e.clientY - startY; if (Math.abs(dx) > 3 || Math.abs(dy) > 3) isDragging = true; if (isDragging) { offsetX = startOffsetX + dx; offsetY = startOffsetY + dy; draw(); } });
+        window.addEventListener('mouseup', (e) => { if (!isPointerDown) return; isPointerDown = false; if (!isDragging) { const rect = canvas.getBoundingClientRect(); const station = getStationAt(e.clientX - rect.left, e.clientY - rect.top); if (station) handleStationClick(station); } });
+        canvas.addEventListener('wheel', (e) => { e.preventDefault(); const rect = canvas.getBoundingClientRect(); const mx = e.clientX - rect.left; const my = e.clientY - rect.top; const factor = e.deltaY < 0 ? 1.1 : 0.9; zoomAt(mx, my, scale * factor); }, { passive: false });
+
+        let lastTouchDist = 0; let lastTouchMid = { x: 0, y: 0 }; let touchStartOffset = { x: 0, y: 0 }; let touchStart = { x: 0, y: 0 }; let touchMoved = false;
+        canvas.addEventListener('touchstart', (e) => { if (e.touches.length === 1) { const t = e.touches[0]; touchStart.x = t.clientX; touchStart.y = t.clientY; touchStartOffset.x = offsetX; touchStartOffset.y = offsetY; touchMoved = false; } else if (e.touches.length === 2) { const t1 = e.touches[0]; const t2 = e.touches[1]; lastTouchDist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY); lastTouchMid.x = (t1.clientX + t2.clientX) / 2; lastTouchMid.y = (t1.clientY + t2.clientY) / 2; touchMoved = true; } e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchmove', (e) => { if (e.touches.length === 1) { const t = e.touches[0]; const dx = t.clientX - touchStart.x; const dy = t.clientY - touchStart.y; if (Math.abs(dx) > 5 || Math.abs(dy) > 5) touchMoved = true; if (touchMoved) { offsetX = touchStartOffset.x + dx; offsetY = touchStartOffset.y + dy; draw(); } } else if (e.touches.length === 2) { const t1 = e.touches[0]; const t2 = e.touches[1]; const dist = Math.hypot(t1.clientX - t2.clientX, t1.clientY - t2.clientY); const mid = { x: (t1.clientX + t2.clientX) / 2, y: (t1.clientY + t2.clientY) / 2 }; const rect = canvas.getBoundingClientRect(); const mx = mid.x - rect.left; const my = mid.y - rect.top; const factor = dist / lastTouchDist; zoomAt(mx, my, scale * factor); offsetX += (mid.x - lastTouchMid.x); offsetY += (mid.y - lastTouchMid.y); draw(); lastTouchDist = dist; lastTouchMid = mid; } e.preventDefault(); }, { passive: false });
+        canvas.addEventListener('touchend', (e) => { if (!touchMoved) { if (e.changedTouches.length > 0) { const t = e.changedTouches[0]; const rect = canvas.getBoundingClientRect(); const station = getStationAt(t.clientX - rect.left, t.clientY - rect.top); if (station) handleStationClick(station); } } }, { passive: false });
+
+        function handleStationClick(station) {
+            if (!selectedStart) { selectedStart = station.key; document.getElementById('statusText').innerHTML = '已选起点，请点击选择 <b>终点</b>'; document.getElementById('selectedDisplay').innerHTML = `🟢 ${station.name}`; draw(); return; }
+            if (selectedStart && !selectedEnd) { if (station.key === selectedStart) { selectedStart = null; document.getElementById('statusText').innerHTML = '点击站点选择 <b>起点</b>'; document.getElementById('selectedDisplay').innerHTML = ''; draw(); return; } selectedEnd = station.key; document.getElementById('statusText').innerHTML = '✅ 已选起点和终点，计算路径中...'; document.getElementById('selectedDisplay').innerHTML = `🟢 ${stationMap[selectedStart]?.name || ''} → 🔴 ${station.name}`; findPath(); return; }
+            if (selectedStart && selectedEnd) { selectedStart = null; selectedEnd = null; pathResult = null; document.getElementById('statusText').innerHTML = '点击站点选择 <b>起点</b>'; document.getElementById('selectedDisplay').innerHTML = ''; document.getElementById('info-panel').classList.remove('show'); draw(); }
+        }
+
+        function findPath() {
+            if (!selectedStart || !selectedEnd) return;
+            if (selectedStart === selectedEnd) { pathResult = { nodes: [selectedStart], edges: [] }; showResult(); return; }
+            const queue = [selectedStart]; const visited = new Set([selectedStart]); const parent = {}; const parentEdge = {};
+            while (queue.length > 0) {
+                const current = queue.shift(); if (current === selectedEnd) break;
+                const neighbors = adj[current] || [];
+                for (const nb of neighbors) { if (!visited.has(nb.target)) { visited.add(nb.target); parent[nb.target] = current; parentEdge[nb.target] = {color: nb.color, line: nb.line}; queue.push(nb.target); } }
+            }
+            if (!parent[selectedEnd]) { document.getElementById('statusText').innerHTML = '❌ 无路径可达'; pathResult = null; draw(); return; }
+            const pathNodes = []; const pathEdges = []; let cur = selectedEnd;
+            while (cur !== selectedStart) { pathNodes.unshift(cur); const prev = parent[cur]; pathEdges.unshift({ source: prev, target: cur, color: parentEdge[cur].color, line: parentEdge[cur].line }); cur = prev; }
+            pathNodes.unshift(selectedStart);
+            pathResult = { nodes: pathNodes, edges: pathEdges }; showResult();
+        }
+
+        function showResult() {
+            if (!pathResult || pathResult.nodes.length < 2) { document.getElementById('info-panel').classList.remove('show'); draw(); return; }
+            document.getElementById('statusText').innerHTML = '✅ 路径已规划'; draw(); updateInfoPanel();
+        }
+
+        function updateInfoPanel() {
+            const panel = document.getElementById('info-panel');
+            if (!pathResult || pathResult.nodes.length < 2) { panel.classList.remove('show'); return; }
+            panel.classList.add('show');
+
+            let segments = [];
+            let currentSegment = null;
+
+            pathResult.edges.forEach((edge, idx) => {
+                const segmentColor = edge.color;
+                const segmentLine = edge.line;
+
+                if (!currentSegment || currentSegment.color !== segmentColor) {
+                    if (currentSegment) segments.push(currentSegment);
+                    currentSegment = { color: segmentColor, line: segmentLine, stations: [], direction: '' };
+                    if (idx > 0 && pathResult.edges[idx-1].target === edge.source) {
+                    } else {
+                        currentSegment.stations.push(stationMap[edge.source]);
+                    }
+                }
+                currentSegment.stations.push(stationMap[edge.target]);
+                currentSegment.direction = stationMap[edge.target].name;
+            });
+            if (currentSegment) segments.push(currentSegment);
+
+            let html = `<div class="route-flow">`;
+            
+            segments.forEach((segment, segIdx) => {
+                const lineName = segment.line === 'G' ? '观光线' : (segment.line ? segment.line + '号线' : '未知线路');
+                html += `<div class="segment-wrap" style="--line-color:${segment.color}">`;
+                html += `<div class="segment-header-h">`;
+                html += `<span class="route-badge-h" style="background:${segment.color};">${lineName}</span>`;
+                html += `<span class="direction-h">往 ${segment.direction} 方向</span>`;
+                html += `</div>`;
+                html += `<div class="stations-h">`;
+                segment.stations.forEach((s) => {
+                    if (!s) return;
+                    html += `<div class="station-h"><div class="station-dot-h"></div><div class="station-name-h">${s.name}</div></div>`;
+                });
+                html += `</div>`;
+                html += `</div>`;
+
+                // 核心修正：将换乘标签作为兄弟节点，保持水平对齐，不再挤压垂直高度
+                if (segIdx < segments.length - 1) {
+                    html += `<div class="transfer-h">换乘</div>`;
+                }
+            });
+
+            html += `</div>`;
+
+            const totalStations = pathResult.nodes.length;
+            const transfers = new Set();
+            pathResult.edges.forEach(e => transfers.add(e.line));
+            const transferCount = transfers.size - 1;
+            
+            html += `<div class="stats-h">总站数 <span>${totalStations}</span> · 换乘 <span>${Math.max(0, transferCount)}</span></div>`;
+
+            panel.innerHTML = html;
+        }
+
+        function updateLegend() {
+            const legend = document.getElementById('legend');
+            const lineColors = {};
+            stationNodes.forEach(s => { if (s.line && s.line !== '' && s.line !== 'G') { if (!lineColors[s.line]) lineColors[s.line] = s.color; } });
+            const gNode = stationNodes.find(s => s.line === 'G');
+            if (gNode) lineColors['G'] = gNode.color;
+
+            const sortedLines = Object.keys(lineColors).sort((a, b) => (parseInt(a) || 999) - (parseInt(b) || 999));
+            let html = '<div class="title">🚇 线路图例</div>';
+            sortedLines.forEach(line => {
+                const label = line === 'G' ? '观光线' : line + '号线';
+                html += `<div class="item"><span class="color-box" style="background:${lineColors[line]}"></span><span class="label">${label}</span></div>`;
+            });
+            legend.innerHTML = html;
+        }
+
+        document.getElementById('zoomInBtn').addEventListener('click', () => { zoomAt(W / 2, H / 2, scale * 1.2); });
+        document.getElementById('zoomOutBtn').addEventListener('click', () => { zoomAt(W / 2, H / 2, scale * 0.8); });
+        document.getElementById('resetViewBtn').addEventListener('click', () => { const scaleX = (W - 60) / rangeX; const scaleY = (H - 60) / rangeY; scale = Math.min(scaleX, scaleY, 2.8); const cx = (minX + maxX) / 2; const cy = (minY + maxY) / 2; offsetX = W / 2 - cx * scale; offsetY = H / 2 - cy * scale; draw(); });
+
+        document.getElementById('resetBtn').addEventListener('click', () => { selectedStart = null; selectedEnd = null; pathResult = null; document.getElementById('statusText').innerHTML = '点击站点选择 <b>起点</b>'; document.getElementById('selectedDisplay').innerHTML = ''; document.getElementById('info-panel').classList.remove('show'); draw(); });
+        document.getElementById('clearPathBtn').addEventListener('click', () => { pathResult = null; document.getElementById('info-panel').classList.remove('show'); if (selectedStart && !selectedEnd) { document.getElementById('statusText').innerHTML = '已选起点，请点击选择 <b>终点</b>'; } else { document.getElementById('statusText').innerHTML = '点击站点选择 <b>起点</b>'; } draw(); });
+
+        window.addEventListener('resize', resize);
+        setTimeout(resize, 100);
+        document.getElementById('statusText').innerHTML = '点击站点选择 <b>起点</b>';
+        console.log(`✅ 加载完成: ${stationNodes.length} 个站点`);
+    </script>
+</body>
+</html>
